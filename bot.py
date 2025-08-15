@@ -18,7 +18,7 @@ openai.api_key = OPENAI_API_KEY
 
 # User preferences (stored in memory, could be moved to a JSON file)
 USER_SETTINGS = {
-    "model": "gpt-4o-mini",  # Default model
+    "model": "gpt-4o",  # Default model
     "format": "summary",      # Default format
     "language": "same",        # Default language (same as input)
     "auto_transcribe": True,   # Auto transcribe without asking
@@ -41,9 +41,11 @@ FORMAT_TEMPLATES = {
 
 # Available models
 MODELS = {
-    "gpt-4o-mini": "Fast & Cheap",
-    "gpt-4o": "Most Capable",
-    "gpt-3.5-turbo": "Legacy Fast"
+    "gpt-5-mini": "Latest & Best Value (Aug 2025)",
+    "gpt-5": "Most Powerful (Aug 2025)", 
+    "gpt-4o-mini": "Fast & Cheap (Still Good)",
+    "gpt-4o": "Previous Flagship",
+    "gpt-3.5-turbo": "Legacy (Being Deprecated)"
 }
 
 class VoiceBot:
