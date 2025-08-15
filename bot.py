@@ -143,8 +143,13 @@ Current settings:
             return
         
         # Store voice file ID for potential reprocessing
-        context.user_data['last_voice_id'] = update.message.voice.file_id
-        context.user_data['last_voice_duration'] = update.message.voice.duration
+        if update.message.voice:
+            context.user_data['last_voice_id'] = update.message.voice.file_id
+            context.user_data['last_voice_duration'] = update.message.voice.duration
+        elif update.message.audio:
+            # Handle audio files (from WhatsApp, etc.)
+            context.user_data['last_voice_id'] = update.message.audio.file_id
+            context.user_data['last_voice_duration'] = update.message.audio.duration
         
         if not USER_SETTINGS["auto_transcribe"]:
             keyboard = [
@@ -156,13 +161,13 @@ Current settings:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                f"🎤 Voice note received ({update.message.voice.duration}s)\nWhat would you like to do?",
+                f"🎤 Voice note received ({update.message.voice.duration if update.message.voice else update.message.audio.duration}s)\nWhat would you like to do?",
                 reply_markup=reply_markup
             )
         else:
             await self.process_voice(update, context)
     
-    async def process_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE, custom_format=None):
+    async def process_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE, custom_format=None, custom_prompt=None):
         # Send processing message
         if update.callback_query:
             status = await update.callback_query.message.reply_text("🎤 Transcribing...")
@@ -175,8 +180,11 @@ Current settings:
         try:
             # Get voice file
             voice_file_id = context.user_data.get('last_voice_id')
-            if not voice_file_id and update.message and update.message.voice:
-                voice_file_id = update.message.voice.file_id
+            if not voice_file_id:
+                if update.message and update.message.voice:
+                    voice_file_id = update.message.voice.file_id
+                elif update.message and update.message.audio:
+                    voice_file_id = update.message.audio.file_id
             
             voice_file = await context.bot.get_file(voice_file_id)
             
@@ -204,25 +212,29 @@ Current settings:
                 # Update status
                 await status.edit_text("📝 Formatting...")
                 
-                # Get format template
-                format_type = custom_format or USER_SETTINGS["format"]
-                format_prompt = FORMAT_TEMPLATES.get(format_type, FORMAT_TEMPLATES["summary"])
-                
-                # Add language instruction if needed
-                language_instruction = ""
-                if USER_SETTINGS["language"] != "same":
-                    language_instruction = f"\nRespond in {USER_SETTINGS['language']}."
-                
-                # Add length instruction
-                length_instruction = {
-                    "short": "\nKeep it very brief (1-2 sentences or 3-4 bullet points).",
-                    "medium": "\nProvide a moderate level of detail.",
-                    "long": "\nProvide comprehensive detail with all important points.",
-                    "full": "\nProvide maximum detail, missing nothing important."
-                }.get(USER_SETTINGS["max_length"], "")
-                
-                # Create prompt
-                full_prompt = f"{format_prompt}{language_instruction}{length_instruction}\n\nTranscription:\n{transcript}"
+                # Check if custom prompt provided
+                if custom_prompt:
+                    full_prompt = f"{custom_prompt}\n\nTranscription:\n{transcript}"
+                    format_type = "custom"
+                else:
+                    # Get format template
+                    format_type = custom_format or USER_SETTINGS["format"]
+                    format_prompt = FORMAT_TEMPLATES.get(format_type, FORMAT_TEMPLATES["summary"])
+                    
+                    # Add language instruction if needed
+                    language_instruction = ""
+                    if USER_SETTINGS["language"] != "same":
+                        language_instruction = f"\nRespond in {USER_SETTINGS['language']}."
+                    
+                    # Add length instruction
+                    length_instruction = {
+                        "short": "\nKeep it very brief (1-2 sentences or 3-4 bullet points).",
+                        "medium": "\nProvide a moderate level of detail.",
+                        "long": "\nProvide comprehensive detail with all important points.",
+                        "full": "\nProvide maximum detail, missing nothing important."
+                    }.get(USER_SETTINGS["max_length"], "")
+                    
+                    full_prompt = f"{format_prompt}{language_instruction}{length_instruction}\n\nTranscription:\n{transcript}"
                 
                 # Get AI response
                 response = openai.chat.completions.create(
@@ -240,6 +252,8 @@ Current settings:
                 # Store formatted result
                 context.user_data['last_formatted'] = formatted_text
                 context.user_data['last_format_type'] = format_type
+                if custom_prompt:
+                    context.user_data['last_custom_prompt'] = custom_prompt
                 
                 # Prepare output
                 output = f"**📋 {format_type.upper()}**\n\n{formatted_text}"
@@ -251,9 +265,10 @@ Current settings:
                 keyboard = [
                     [
                         InlineKeyboardButton("🔄 Reformat", callback_data="show_formats"),
-                        InlineKeyboardButton("📊 Different Model", callback_data="change_model_once")
+                        InlineKeyboardButton("✨ Custom Prompt", callback_data="custom_prompt_info")
                     ],
                     [
+                        InlineKeyboardButton("📊 Different Model", callback_data="change_model_once"),
                         InlineKeyboardButton("📝 Show Transcript", callback_data="show_transcript") 
                         if not USER_SETTINGS["include_transcript"] else
                         InlineKeyboardButton("📝 Hide Transcript", callback_data="hide_transcript")
@@ -585,7 +600,82 @@ Current settings:
             reply_markup=reply_markup
         )
     
-    async def quick_format_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, format_type: str):
+    async def show_custom_prompt_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show help for custom prompts"""
+        help_text = """
+🎨 **Custom Prompt Guide**
+
+After sending a voice note, you can send ANY instruction to process it!
+
+**How it works:**
+1. Send a voice note
+2. Type your custom instruction (don't use /)
+3. Get your custom formatted result
+
+**Example prompts you can use:**
+
+📚 **Learning & Study:**
+• Explain this like I'm 5
+• Turn this into study flashcards
+• Create a quiz from this content
+• Summarize for someone with ADHD
+
+💼 **Professional:**
+• Make this sound professional for my boss
+• Turn this into a LinkedIn post
+• Create an email to a client
+• Format as a project proposal
+
+🎯 **Specific Extractions:**
+• Extract only the numbers and dates
+• List all the names mentioned
+• Find action items and deadlines
+• Get only the questions asked
+
+🌍 **Language & Style:**
+• Translate to Spanish and make it formal
+• Rewrite in British English
+• Make this more persuasive
+• Turn this into a comedy script
+
+📱 **Social Media:**
+• Turn this into a tweet thread
+• Make an Instagram caption
+• Create a TikTok script
+• Format as a Reddit post
+
+🧠 **Analysis:**
+• What are the logical flaws here?
+• Play devil's advocate
+• Find the hidden assumptions
+• Analyze the emotional tone
+
+✨ **Creative:**
+• Turn this into a haiku
+• Make a rap out of this
+• Write as a news headline
+• Create a movie plot from this
+
+**Pro Tips:**
+• Be specific about what you want
+• You can combine instructions
+• Previous prompts are remembered
+• Works in any language!
+
+**Example combination:**
+"Translate to French, make it very formal, and format as an email to a CEO"
+
+Just type your instruction after sending a voice note - no / needed!
+        """
+        
+        keyboard = [[InlineKeyboardButton("✅ Got it!", callback_data="close")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            help_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
         """Handle quick format commands like /bullets, /summary, etc."""
         if not await self.check_user(update):
             return
@@ -629,6 +719,8 @@ def main():
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("help", bot.start))
     app.add_handler(CommandHandler("settings", bot.settings_menu))
+    app.add_handler(CommandHandler("prompt", bot.show_custom_prompt_help))
+    app.add_handler(CommandHandler("custom", bot.show_custom_prompt_help))
     
     # Quick format commands
     app.add_handler(CommandHandler("summary", lambda u, c: bot.quick_format_command(u, c, "summary")))
@@ -639,7 +731,8 @@ def main():
     app.add_handler(CommandHandler("meeting", lambda u, c: bot.quick_format_command(u, c, "meeting")))
     
     # Message handlers
-    app.add_handler(MessageHandler(filters.VOICE, bot.handle_voice))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, bot.handle_voice))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_text))
     
     # Callback query handler
     app.add_handler(CallbackQueryHandler(bot.handle_callback))
