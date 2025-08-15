@@ -18,7 +18,7 @@ openai.api_key = OPENAI_API_KEY
 
 # User preferences (stored in memory, could be moved to a JSON file)
 USER_SETTINGS = {
-    "model": "gpt-4o",  # Default model
+    "model": "gpt-5-mini",  # Default model - Updated to GPT-5
     "format": "summary",      # Default format
     "language": "same",        # Default language (same as input)
     "auto_transcribe": True,   # Auto transcribe without asking
@@ -39,13 +39,14 @@ FORMAT_TEMPLATES = {
     "analysis": "Analyze this content and provide: Main argument, Supporting evidence, Counterpoints (if any), Conclusion:"
 }
 
-# Available models
+# Available models - Updated for August 2025
 MODELS = {
     "gpt-5-mini": "Latest & Best Value (Aug 2025)",
-    "gpt-5": "Most Powerful (Aug 2025)", 
-    "gpt-4o-mini": "Fast & Cheap (Still Good)",
+    "gpt-5": "Most Powerful (Aug 2025)",
+    "gpt-5-nano": "Fastest & Cheapest (Aug 2025)",
+    "gpt-4o-mini": "Previous Best Value",
     "gpt-4o": "Previous Flagship",
-    "gpt-3.5-turbo": "Legacy (Being Deprecated)"
+    "gpt-3.5-turbo": "Legacy (Deprecated)"
 }
 
 class VoiceBot:
@@ -70,6 +71,7 @@ Send me a voice note and I'll transcribe and format it for you.
 • /settings - Configure preferences
 • /format - Choose output format
 • /model - Switch AI model
+• /prompt - Learn about custom prompts
 • /stats - View usage statistics
 • /help - Show all commands
 
@@ -78,6 +80,10 @@ Send me a voice note and I'll transcribe and format it for you.
 • /bullets - Convert to bullet points
 • /action - Extract action items
 • /todo - Extract TODOs
+
+**✨ Custom Prompts:**
+After sending a voice note, just type any instruction (no /) to process it!
+Examples: "Summarize for ADHD", "Make it a tweet", "Extract only dates"
 
 Current settings:
 • Model: {model}
@@ -148,10 +154,15 @@ Current settings:
         if update.message.voice:
             context.user_data['last_voice_id'] = update.message.voice.file_id
             context.user_data['last_voice_duration'] = update.message.voice.duration
+            file_duration = update.message.voice.duration
         elif update.message.audio:
             # Handle audio files (from WhatsApp, etc.)
             context.user_data['last_voice_id'] = update.message.audio.file_id
             context.user_data['last_voice_duration'] = update.message.audio.duration
+            file_duration = update.message.audio.duration
+        else:
+            await update.message.reply_text("❌ No voice or audio file detected")
+            return
         
         if not USER_SETTINGS["auto_transcribe"]:
             keyboard = [
@@ -163,7 +174,7 @@ Current settings:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                f"🎤 Voice note received ({update.message.voice.duration if update.message.voice else update.message.audio.duration}s)\nWhat would you like to do?",
+                f"🎤 Voice note received ({file_duration}s)\nWhat would you like to do?",
                 reply_markup=reply_markup
             )
         else:
@@ -187,6 +198,10 @@ Current settings:
                     voice_file_id = update.message.voice.file_id
                 elif update.message and update.message.audio:
                     voice_file_id = update.message.audio.file_id
+            
+            if not voice_file_id:
+                await status.edit_text("❌ No voice file found")
+                return
             
             voice_file = await context.bot.get_file(voice_file_id)
             
@@ -308,6 +323,163 @@ Current settings:
         except Exception as e:
             await status.edit_text(f"❌ Error: {str(e)}")
     
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages - check for custom prompts"""
+        if not await self.check_user(update):
+            return
+        
+        text = update.message.text
+        
+        # Check if it's a custom prompt (not a command)
+        if not text.startswith('/'):
+            # Check if we have a recent transcript to process
+            transcript = context.user_data.get('last_transcript')
+            if transcript:
+                # This is a custom prompt!
+                await update.message.reply_text("✨ Processing with your custom prompt...")
+                
+                try:
+                    # Use the custom prompt
+                    response = openai.chat.completions.create(
+                        model=USER_SETTINGS["model"],
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that processes voice note transcriptions according to the user's specific instructions."},
+                            {"role": "user", "content": f"{text}\n\nTranscription:\n{transcript}"}
+                        ],
+                        temperature=0.7,
+                        max_tokens=1000
+                    )
+                    
+                    formatted_text = response.choices[0].message.content
+                    
+                    # Store the result
+                    context.user_data['last_formatted'] = formatted_text
+                    context.user_data['last_custom_prompt'] = text
+                    
+                    # Prepare output
+                    output = f"**✨ CUSTOM FORMAT**\n_Prompt: {text[:50]}{'...' if len(text) > 50 else ''}_\n\n{formatted_text}"
+                    
+                    if USER_SETTINGS["include_transcript"]:
+                        output += f"\n\n**📝 Original Transcript:**\n_{transcript}_"
+                    
+                    # Add action buttons
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("🔄 Try Another Prompt", callback_data="prompt_hint"),
+                            InlineKeyboardButton("📋 Standard Formats", callback_data="show_formats")
+                        ],
+                        [InlineKeyboardButton("✅ Done", callback_data="close")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await update.message.reply_text(
+                        output[:4000],
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup
+                    )
+                    
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Error processing custom prompt: {str(e)}")
+            else:
+                # No transcript available
+                await update.message.reply_text(
+                    "💡 **Custom Prompt Detected!**\n\n"
+                    "But I don't have a recent transcription to process.\n\n"
+                    "**How to use custom prompts:**\n"
+                    "1. Send a voice note first\n"
+                    "2. Then send your custom instruction\n\n"
+                    "**Examples:**\n"
+                    "• _Summarize this for a 5-year-old_\n"
+                    "• _Extract only the dates and numbers_\n"
+                    "• _Make this sound professional_\n"
+                    "• _Turn this into a tweet_\n"
+                    "• _Translate to Spanish and make it formal_",
+                    parse_mode="Markdown"
+                )
+        else:
+            # It's a command, check which one
+            if text == "/status":
+                await update.message.reply_text("✅ Bot is running and ready for voice notes!")
+            elif text == "/prompt" or text == "/custom":
+                await self.show_custom_prompt_help(update, context)
+    
+    async def show_custom_prompt_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show help for custom prompts"""
+        help_text = """
+🎨 **Custom Prompt Guide**
+
+After sending a voice note, you can send ANY instruction to process it!
+
+**How it works:**
+1. Send a voice note
+2. Type your custom instruction (don't use /)
+3. Get your custom formatted result
+
+**Example prompts you can use:**
+
+📚 **Learning & Study:**
+• Explain this like I'm 5
+• Turn this into study flashcards
+• Create a quiz from this content
+• Summarize for someone with ADHD
+
+💼 **Professional:**
+• Make this sound professional for my boss
+• Turn this into a LinkedIn post
+• Create an email to a client
+• Format as a project proposal
+
+🎯 **Specific Extractions:**
+• Extract only the numbers and dates
+• List all the names mentioned
+• Find action items and deadlines
+• Get only the questions asked
+
+🌍 **Language & Style:**
+• Translate to Spanish and make it formal
+• Rewrite in British English
+• Make this more persuasive
+• Turn this into a comedy script
+
+📱 **Social Media:**
+• Turn this into a tweet thread
+• Make an Instagram caption
+• Create a TikTok script
+• Format as a Reddit post
+
+🧠 **Analysis:**
+• What are the logical flaws here?
+• Play devil's advocate
+• Find the hidden assumptions
+• Analyze the emotional tone
+
+✨ **Creative:**
+• Turn this into a haiku
+• Make a rap out of this
+• Write as a news headline
+• Create a movie plot from this
+
+**Pro Tips:**
+• Be specific about what you want
+• You can combine instructions
+• Previous prompts are remembered
+• Works in any language!
+
+**Example combination:**
+"Translate to French, make it very formal, and format as an email to a CEO"
+
+Just type your instruction after sending a voice note - no / needed!
+        """
+        
+        keyboard = [[InlineKeyboardButton("✅ Got it!", callback_data="close")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            help_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    
     async def show_formats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show format options for reprocessing"""
         keyboard = []
@@ -401,6 +573,57 @@ Current settings:
             
         elif data == "change_model_once":
             await self.show_model_quick_change(update, context)
+            
+        elif data == "custom_prompt_info":
+            await self.show_custom_prompt_info(update, context)
+            
+        elif data == "prompt_hint":
+            await query.answer("Just type your instruction - no / needed!")
+            await query.message.reply_text(
+                "💡 **Try another custom prompt!**\n\n"
+                "Just type what you want, for example:\n"
+                "• Make this rhyme\n"
+                "• What's the main contradiction here?\n"
+                "• Rewrite as technical documentation\n"
+                "• Extract the emotional subtext\n\n"
+                "_Just type your instruction below..._",
+                parse_mode="Markdown"
+            )
+            
+        elif data == "show_formats":
+            await self.show_formats(update, context)
+            
+        elif data == "back_to_settings":
+            await self.settings_menu(update, context)
+    
+    async def show_custom_prompt_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show info about custom prompts via callback"""
+        info_text = """
+✨ **Custom Prompts Available!**
+
+Just type any instruction after sending a voice note!
+
+**Quick examples:**
+• Summarize for someone with ADHD
+• Make this a LinkedIn post
+• Extract only the deadlines
+• Translate to Spanish
+• Turn into bullet points for kids
+• Make it sound angry
+• Find the logical flaws
+
+No / needed - just type what you want!
+        """
+        
+        keyboard = [[InlineKeyboardButton("✅ Got it!", callback_data="close")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            info_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+        await update.callback_query.answer("Just type your custom instruction!")
     
     async def show_format_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
@@ -430,8 +653,19 @@ Current settings:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        model_descriptions = """
+🤖 **Choose AI Model:**
+
+• `gpt-5-mini`: Latest, best value (Aug 2025)
+• `gpt-5`: Most powerful, highest quality
+• `gpt-5-nano`: Fastest and cheapest
+• `gpt-4o-mini`: Previous best value
+• `gpt-4o`: Previous flagship
+• `gpt-3.5-turbo`: Legacy (being deprecated)
+        """
+        
         await update.callback_query.edit_message_text(
-            "🤖 **Choose AI Model:**\n\n• `gpt-4o-mini`: Fast, cheap, great for most tasks\n• `gpt-4o`: Most capable, best quality\n• `gpt-3.5-turbo`: Legacy, fastest",
+            model_descriptions,
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -602,82 +836,7 @@ Current settings:
             reply_markup=reply_markup
         )
     
-    async def show_custom_prompt_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show help for custom prompts"""
-        help_text = """
-🎨 **Custom Prompt Guide**
-
-After sending a voice note, you can send ANY instruction to process it!
-
-**How it works:**
-1. Send a voice note
-2. Type your custom instruction (don't use /)
-3. Get your custom formatted result
-
-**Example prompts you can use:**
-
-📚 **Learning & Study:**
-• Explain this like I'm 5
-• Turn this into study flashcards
-• Create a quiz from this content
-• Summarize for someone with ADHD
-
-💼 **Professional:**
-• Make this sound professional for my boss
-• Turn this into a LinkedIn post
-• Create an email to a client
-• Format as a project proposal
-
-🎯 **Specific Extractions:**
-• Extract only the numbers and dates
-• List all the names mentioned
-• Find action items and deadlines
-• Get only the questions asked
-
-🌍 **Language & Style:**
-• Translate to Spanish and make it formal
-• Rewrite in British English
-• Make this more persuasive
-• Turn this into a comedy script
-
-📱 **Social Media:**
-• Turn this into a tweet thread
-• Make an Instagram caption
-• Create a TikTok script
-• Format as a Reddit post
-
-🧠 **Analysis:**
-• What are the logical flaws here?
-• Play devil's advocate
-• Find the hidden assumptions
-• Analyze the emotional tone
-
-✨ **Creative:**
-• Turn this into a haiku
-• Make a rap out of this
-• Write as a news headline
-• Create a movie plot from this
-
-**Pro Tips:**
-• Be specific about what you want
-• You can combine instructions
-• Previous prompts are remembered
-• Works in any language!
-
-**Example combination:**
-"Translate to French, make it very formal, and format as an email to a CEO"
-
-Just type your instruction after sending a voice note - no / needed!
-        """
-        
-        keyboard = [[InlineKeyboardButton("✅ Got it!", callback_data="close")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            help_text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
+    async def quick_format_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, format_type: str):
         """Handle quick format commands like /bullets, /summary, etc."""
         if not await self.check_user(update):
             return
@@ -732,7 +891,7 @@ def main():
     app.add_handler(CommandHandler("keypoints", lambda u, c: bot.quick_format_command(u, c, "keypoints")))
     app.add_handler(CommandHandler("meeting", lambda u, c: bot.quick_format_command(u, c, "meeting")))
     
-    # Message handlers
+    # Message handlers - IMPORTANT: Voice and Audio support
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, bot.handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_text))
     
